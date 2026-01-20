@@ -1,0 +1,67 @@
+version: 2
+
+project_name: portman
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: portman
+    binary: portman
+    main: ./cmd/portman
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+
+archives:
+  - id: portman
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE*
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"
+
+brews:
+  - repository:
+      owner: tasnimzotder
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    folder: Formula
+    homepage: "https://github.com/tasnimzotder/portman"
+    description: "See what's using your ports. Kill rogue processes. Wait for services."
+    license: "MIT"
+    install: |
+      bin.install "portman"
+      bin.install_symlink "portman" => "pm"
+    test: |
+      system "#{bin}/portman", "--help"
+
+release:
+  github:
+    owner: tasnimzotder
+    name: portman
+  draft: false
+  prerelease: auto
+  name_template: "v{{.Version}}"
