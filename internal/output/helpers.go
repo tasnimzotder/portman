@@ -2,7 +2,7 @@ package output
 
 import (
 	"fmt"
-	"os"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -22,12 +22,14 @@ func truncate(s string, max int) string {
 	return s[:max-3] + "..."
 }
 
-func formatDuration(seconds int64) string {
+// FormatDuration formats seconds into a human-readable duration
+func FormatDuration(seconds int64) string {
 	d := time.Duration(seconds) * time.Second
 	return d.String()
 }
 
-func formatBytes(bytes int64) string {
+// FormatBytes formats bytes into human-readable format
+func FormatBytes(bytes int64) string {
 	const unit = 1024
 	if bytes < unit {
 		return fmt.Sprintf("%d B", bytes)
@@ -43,12 +45,7 @@ func formatBytes(bytes int64) string {
 }
 
 func getPlatform() string {
-	// Using build-time detection would be better,
-	// but this works for runtime
-	if _, err := os.Stat("/proc"); err == nil {
-		return "linux"
-	}
-	return "darwin"
+	return runtime.GOOS
 }
 
 // SortListeners sorts listeners by the specified field.

@@ -1,9 +1,16 @@
 package scanner
 
 import (
+	"errors"
+	"fmt"
 	"runtime"
 
 	"github.com/tasnimzotder/portman/internal/model"
+)
+
+var (
+	ErrUnsupportedPlatform = errors.New("unsupported platform")
+	ErrNotImplemented      = errors.New("not implemented yet")
 )
 
 type Scanner interface {
@@ -30,14 +37,13 @@ func DefaultOptions() Options {
 	}
 }
 
-func New(opts Options) Scanner {
+func New(opts Options) (Scanner, error) {
 	switch runtime.GOOS {
 	case "linux":
-		// TODO: implement later
-		panic("not implemented yet")
+		return nil, ErrNotImplemented
 	case "darwin":
-		return NewDarwinScanner(opts)
+		return NewDarwinScanner(opts), nil
 	default:
-		panic("unsupported platform: " + runtime.GOOS)
+		return nil, fmt.Errorf("%w: %s", ErrUnsupportedPlatform, runtime.GOOS)
 	}
 }

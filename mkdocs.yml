@@ -19,6 +19,7 @@ nav:
   - Installation: installation.md
   - Commands: commands.md
   - Examples: examples.md
+  - Internals: internals.md
 
 markdown_extensions:
   - admonition

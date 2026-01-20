@@ -52,7 +52,7 @@ func (f *TableFormatter) Format(listeners []model.Listener) string {
 			}
 
 			if l.Process.UptimeSeconds > 0 {
-				uptime = formatDuration(l.Process.UptimeSeconds)
+				uptime = FormatDuration(l.Process.UptimeSeconds)
 			}
 		}
 
@@ -92,9 +92,9 @@ func (f *TableFormatter) FormatDetail(l *model.Listener) string {
 		if !l.Process.StartTime.IsZero() {
 			sb.WriteString(fmt.Sprintf("  Started:     %s (%s ago)\n",
 				l.Process.StartTime.Format("2006-01-02 15:04:05"),
-				formatDuration(l.Process.UptimeSeconds)))
+				FormatDuration(l.Process.UptimeSeconds)))
 		} else if l.Process.UptimeSeconds > 0 {
-			sb.WriteString(fmt.Sprintf("  Uptime:      %s\n", formatDuration(l.Process.UptimeSeconds)))
+			sb.WriteString(fmt.Sprintf("  Uptime:      %s\n", FormatDuration(l.Process.UptimeSeconds)))
 		}
 	} else {
 		sb.WriteString("  (permission denied or process info unavailable)\n")
@@ -117,7 +117,7 @@ func (f *TableFormatter) FormatDetail(l *model.Listener) string {
 			remoteAddr := fmt.Sprintf("%s:%d", c.RemoteAddr, c.RemotePort)
 			duration := "-"
 			if c.DurationSeconds > 0 {
-				duration = formatDuration(c.DurationSeconds)
+				duration = FormatDuration(c.DurationSeconds)
 			}
 			sb.WriteString(fmt.Sprintf("  %-42s %-14s %s\n", remoteAddr, c.State, duration))
 		}
@@ -125,7 +125,7 @@ func (f *TableFormatter) FormatDetail(l *model.Listener) string {
 
 	if l.Stats != nil {
 		sb.WriteString("\nProcess Stats\n")
-		sb.WriteString(fmt.Sprintf("  Memory:      %s (RSS)\n", formatBytes(l.Stats.MemoryRSS)))
+		sb.WriteString(fmt.Sprintf("  Memory:      %s (RSS)\n", FormatBytes(l.Stats.MemoryRSS)))
 		sb.WriteString(fmt.Sprintf("  CPU:         %.1f%%\n", l.Stats.CPUPercent))
 		sb.WriteString(fmt.Sprintf("  FDs:         %d open\n", l.Stats.FDCount))
 		sb.WriteString(fmt.Sprintf("  Threads:     %d\n", l.Stats.ThreadCount))

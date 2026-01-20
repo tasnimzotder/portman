@@ -55,8 +55,48 @@ func (s *DarwinScanner) GetPort(port int) (*model.Listener, error) {
 
 	listener.Connections = connections
 	listener.ConnectionCount = len(connections)
+	listener.Stats = s.getProcessStats(listener.PID)
 
 	return listener, nil
+}
+
+// getProcessStats collects memory, CPU, FD count, and thread count for a process.
+func (s *DarwinScanner) getProcessStats(pid int) *model.ProcessStats {
+	stats := &model.ProcessStats{}
+	pidStr := strconv.Itoa(pid)
+
+	// Memory (RSS in KB) and CPU using ps
+	cmd := exec.Command("ps", "-o", "rss=,%cpu=", "-p", pidStr)
+	output, err := cmd.Output()
+	if err == nil {
+		fields := strings.Fields(string(output))
+		if len(fields) >= 2 {
+			if rss, err := strconv.ParseInt(fields[0], 10, 64); err == nil {
+				stats.MemoryRSS = rss * 1024 // KB to bytes
+			}
+			if cpu, err := strconv.ParseFloat(fields[1], 64); err == nil {
+				stats.CPUPercent = cpu
+			}
+		}
+	}
+
+	// FD count using lsof -p
+	cmd = exec.Command("lsof", "-p", pidStr)
+	output, _ = cmd.Output()
+	lines := strings.Split(string(output), "\n")
+	if len(lines) > 2 {
+		stats.FDCount = len(lines) - 2 // Subtract header and trailing newline
+	}
+
+	// Thread count using ps -M
+	cmd = exec.Command("ps", "-M", "-p", pidStr)
+	output, _ = cmd.Output()
+	lines = strings.Split(string(output), "\n")
+	if len(lines) > 2 {
+		stats.ThreadCount = len(lines) - 2 // Subtract header and trailing newline
+	}
+
+	return stats
 }
 
 // parsePortDetail parses lsof output for a specific port, returning the listener and its connections.
