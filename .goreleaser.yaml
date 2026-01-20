@@ -43,20 +43,16 @@ changelog:
       - "^ci:"
       - "^chore:"
 
-brews:
+homebrew_casks:
   - repository:
       owner: tasnimzotder
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    folder: Formula
     homepage: "https://github.com/tasnimzotder/portman"
     description: "See what's using your ports. Kill rogue processes. Wait for services."
     license: "MIT"
-    install: |
-      bin.install "portman"
-      bin.install_symlink "portman" => "pm"
-    test: |
-      system "#{bin}/portman", "--help"
+    binaries:
+      - portman
 
 release:
   github:
