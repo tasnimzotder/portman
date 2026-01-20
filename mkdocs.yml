@@ -20,6 +20,7 @@ nav:
   - Commands: commands.md
   - Examples: examples.md
   - Internals: internals.md
+  - Changelog: changelog.md
 
 markdown_extensions:
   - admonition

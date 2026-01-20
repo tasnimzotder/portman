@@ -45,6 +45,16 @@ release:
 docs:
 	uvx --with mkdocs-material mkdocs serve
 
+## Changelog
+changelog:
+	git-cliff --output CHANGELOG.md
+
+changelog-preview:
+	git-cliff --unreleased
+
+changelog-update:
+	git-cliff --unreleased --prepend CHANGELOG.md
+
 ## Cleanup
 clean:
 	rm -rf bin/ dist/
