@@ -19,9 +19,9 @@ builds:
       - arm64
     ldflags:
       - -s -w
-      - -X main.version={{.Version}}
-      - -X main.commit={{.Commit}}
-      - -X main.date={{.Date}}
+      - -X github.com/tasnimzotder/portman/internal/cli.Version={{.Version}}
+      - -X github.com/tasnimzotder/portman/internal/cli.Commit={{.Commit}}
+      - -X github.com/tasnimzotder/portman/internal/cli.Date={{.Date}}
 
 archives:
   - id: portman

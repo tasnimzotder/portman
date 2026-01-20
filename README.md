@@ -40,6 +40,7 @@ portman wait 5432        # Wait for port to be available
 | `portman kill <port>`    | Kill process on port          |
 | `portman wait <port>`    | Wait for port availability    |
 | `portman pid <pid>`      | Find ports by PID             |
+| `portman version`        | Print version information     |
 
 ## Flags
 
