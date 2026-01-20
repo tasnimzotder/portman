@@ -1,0 +1,27 @@
+site_name: portman
+site_url: https://tasnimzotder.github.io/portman
+site_description: See what's using your ports. Kill rogue processes. Wait for services.
+repo_url: https://github.com/tasnimzotder/portman
+repo_name: tasnimzotder/portman
+
+theme:
+  name: material
+  palette:
+    scheme: slate
+    primary: indigo
+  features:
+    - navigation.instant
+    - navigation.sections
+    - content.code.copy
+
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - Commands: commands.md
+  - Examples: examples.md
+
+markdown_extensions:
+  - admonition
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
