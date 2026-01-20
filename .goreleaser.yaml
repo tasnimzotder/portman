@@ -25,7 +25,8 @@ builds:
 
 archives:
   - id: portman
-    format: tar.gz
+    formats:
+      - tar.gz
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
       - README.md
@@ -53,6 +54,10 @@ homebrew_casks:
     license: "MIT"
     binaries:
       - portman
+    hooks:
+      post:
+        install: |
+          system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/portman"]
 
 release:
   github:
