@@ -3,9 +3,10 @@ package cli
 import (
 	"fmt"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
 	"github.com/tasnimzotder/portman/internal/output"
-	"github.com/tasnimzotder/portman/internal/scanner"
+	"github.com/tasnimzotder/portman/internal/tui"
 )
 
 var findCmd = &cobra.Command{
@@ -13,9 +14,15 @@ var findCmd = &cobra.Command{
 	Short: "Find ports by process name, command, or user",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		opts := scanner.DefaultOptions()
-		s, err := scanner.New(opts)
+		s, err := newScanner()
 		if err != nil {
+			return err
+		}
+
+		// Interactive TUI
+		if interactive && !jsonOutput && tui.IsTerminal() {
+			m := tui.NewFindModel(s, args[0])
+			_, err := tea.NewProgram(m).Run()
 			return err
 		}
 

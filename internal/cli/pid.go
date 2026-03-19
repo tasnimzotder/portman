@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"strconv"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
-	"github.com/tasnimzotder/portman/internal/model"
 	"github.com/tasnimzotder/portman/internal/output"
-	"github.com/tasnimzotder/portman/internal/scanner"
+	"github.com/tasnimzotder/portman/internal/tui"
 )
 
 var pidCmd = &cobra.Command{
@@ -16,31 +16,30 @@ var pidCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		pid, err := strconv.Atoi(args[0])
-		if err != nil {
-			return fmt.Errorf("invalid pid: %s", args[0])
+		if err != nil || pid <= 0 {
+			return fmt.Errorf("invalid pid: %s (must be a positive integer)", args[0])
 		}
 
-		opts := scanner.DefaultOptions()
-		s, err := scanner.New(opts)
-		if err != nil {
-			return err
-		}
-
-		listeners, err := s.ListListeners()
+		s, err := newScanner()
 		if err != nil {
 			return err
 		}
 
-		var matches []model.Listener
-		for _, l := range listeners {
-			if l.PID == pid {
-				matches = append(matches, l)
-			}
+		matches, err := s.ListByPID(pid)
+		if err != nil {
+			return err
 		}
 
 		if len(matches) == 0 {
 			fmt.Printf("No ports found for PID %d\n", pid)
 			return nil
+		}
+
+		// Interactive TUI
+		if interactive && !jsonOutput && tui.IsTerminal() {
+			m := tui.NewListModelWithData(matches, sortBy)
+			_, err := tea.NewProgram(m).Run()
+			return err
 		}
 
 		output.SortListeners(matches, sortBy)
@@ -52,12 +51,12 @@ var pidCmd = &cobra.Command{
 				return err
 			}
 			fmt.Println(out)
-		} else {
-			formatter := output.NewTableFormatter()
-			formatter.NoHeader = noHeader
-			fmt.Print(formatter.Format(matches))
+			return nil
 		}
 
+		// Default: tree view
+		formatter := output.NewTableFormatter()
+		fmt.Print(formatter.FormatTree(matches, pid))
 		return nil
 	},
 }

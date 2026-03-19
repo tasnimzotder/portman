@@ -6,8 +6,9 @@ import (
 	"os/exec"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
-	"github.com/tasnimzotder/portman/internal/scanner"
+	"github.com/tasnimzotder/portman/internal/tui"
 	"github.com/tasnimzotder/portman/internal/wait"
 )
 
@@ -21,7 +22,7 @@ var (
 
 func init() {
 	waitCmd.Flags().DurationVar(&waitTimeout, "timeout", 30*time.Second, "Maximum wait time")
-	waitCmd.Flags().DurationVarP(&waitCmdInterval, "interval", "i", 100*time.Millisecond, "Check interval")
+	waitCmd.Flags().DurationVarP(&waitCmdInterval, "interval", "I", 100*time.Millisecond, "Check interval")
 	waitCmd.Flags().StringVarP(&waitExec, "exec", "e", "", "Command to run once available")
 	waitCmd.Flags().BoolVarP(&waitQuiet, "quiet", "q", false, "No output, just exit code")
 	waitCmd.Flags().BoolVar(&waitInvert, "invert", false, "Wait for port to be FREE instead")
@@ -34,18 +35,44 @@ var waitCmd = &cobra.Command{
 	RunE:  runWait,
 }
 
+func runExecCommand(cmdStr string) error {
+	execCmd := exec.Command("sh", "-c", cmdStr)
+	execCmd.Stdout = os.Stdout
+	execCmd.Stderr = os.Stderr
+	execCmd.Stdin = os.Stdin
+	if err := execCmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			os.Exit(exitErr.ExitCode())
+		}
+		return err
+	}
+	return nil
+}
+
 func runWait(cmd *cobra.Command, args []string) error {
 	port, err := parsePort(args[0])
 	if err != nil {
 		return err
 	}
 
-	opts := scanner.DefaultOptions()
-	s, err := scanner.New(opts)
+	s, err := newScanner()
 	if err != nil {
 		return err
 	}
 
+	// TUI wait for interactive terminals
+	if !waitQuiet && tui.IsTerminal() {
+		m := tui.NewWaitModel(s, port, waitTimeout, waitCmdInterval, waitInvert)
+		if _, err := tea.NewProgram(m).Run(); err != nil {
+			return err
+		}
+		if waitExec != "" {
+			return runExecCommand(waitExec)
+		}
+		return nil
+	}
+
+	// Non-interactive wait
 	if !waitQuiet {
 		if waitInvert {
 			fmt.Printf("Waiting for port %d to be free...\n", port)
@@ -70,29 +97,18 @@ func runWait(cmd *cobra.Command, args []string) error {
 
 	if !waitQuiet {
 		if waitInvert {
-			fmt.Printf("✓ Port %d is now free after %s\n", port, result.Elapsed.Round(time.Millisecond))
+			fmt.Printf("Port %d is now free after %s\n", port, result.Elapsed.Round(time.Millisecond))
 		} else {
 			processInfo := ""
 			if result.ProcessName != "" {
 				processInfo = fmt.Sprintf(" (%s)", result.ProcessName)
 			}
-			fmt.Printf("✓ Port %d is now open%s after %s\n", port, processInfo, result.Elapsed.Round(time.Millisecond))
+			fmt.Printf("Port %d is now open%s after %s\n", port, processInfo, result.Elapsed.Round(time.Millisecond))
 		}
 	}
 
-	// Execute command if --exec provided
 	if waitExec != "" {
-		execCmd := exec.Command("sh", "-c", waitExec)
-		execCmd.Stdout = os.Stdout
-		execCmd.Stderr = os.Stderr
-		execCmd.Stdin = os.Stdin
-
-		if err := execCmd.Run(); err != nil {
-			if exitErr, ok := err.(*exec.ExitError); ok {
-				os.Exit(exitErr.ExitCode())
-			}
-			return err
-		}
+		return runExecCommand(waitExec)
 	}
 
 	return nil

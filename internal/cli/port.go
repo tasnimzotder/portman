@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"fmt"
+
+	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
-	"github.com/tasnimzotder/portman/internal/scanner"
-	"github.com/tasnimzotder/portman/internal/ui"
+	"github.com/tasnimzotder/portman/internal/tui"
 )
 
 var portCmd = &cobra.Command{
@@ -16,18 +18,24 @@ var portCmd = &cobra.Command{
 			return err
 		}
 
-		opts := scanner.DefaultOptions()
-		s, err := scanner.New(opts)
+		s, err := newScanner()
 		if err != nil {
 			return err
 		}
 
 		if watchMode {
-			return ui.RunWatchPort(ui.WatchPortConfig{
-				Scanner:  s,
-				Port:     port,
-				Interval: watchInterval,
-			})
+			if !tui.IsTerminal() {
+				return fmt.Errorf("watch mode requires an interactive terminal")
+			}
+			m := tui.NewWatchPortModel(s, port, watchInterval)
+			_, err := tea.NewProgram(m).Run()
+			return err
+		}
+
+		if interactive && tui.IsTerminal() {
+			m := tui.NewDetailModel(s, port)
+			_, err := tea.NewProgram(m).Run()
+			return err
 		}
 
 		return showPortDetail(s, port)

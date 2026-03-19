@@ -40,12 +40,9 @@ func Wait(s scanner.Scanner, port int, timeout, interval time.Duration, invert b
 		} else {
 			// Wait for port to be IN USE (available/listening)
 			if portInUse {
-				processName := ""
-				if listener.Process != nil {
-					processName = listener.Process.Name
-					if listener.Process.Command != "" {
-						processName = listener.Process.Command
-					}
+				processName := listener.Process.DisplayName()
+				if processName == "unknown" {
+					processName = ""
 				}
 				return Result{
 					Success:     true,

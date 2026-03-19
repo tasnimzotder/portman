@@ -47,6 +47,10 @@ func Kill(pid int, signal syscall.Signal) error {
 		if errors.Is(err, os.ErrProcessDone) {
 			return nil // Process already exited
 		}
+		// ESRCH = no such process — treat as already gone
+		if errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
 		return err
 	}
 

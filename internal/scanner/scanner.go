@@ -17,6 +17,7 @@ type Scanner interface {
 	ListListeners() ([]model.Listener, error)
 	GetPort(port int) (*model.Listener, error)
 	FindByPattern(pattern string) ([]model.Listener, error)
+	ListByPID(pid int) ([]model.Listener, error)
 }
 
 type Options struct {
