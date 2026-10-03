@@ -55,10 +55,12 @@ homebrew_casks:
     license: "MIT"
     binaries:
       - portman
-    hooks:
-      post:
-        install: |
-          system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/portman"]
+    # Homebrew 7 uses declarative flight steps; GoReleaser hooks emit legacy blocks.
+    custom_block: |
+      postflight_steps do
+        run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ `{{staged_path}}` }}/portman"],
+            writable_paths: ["portman"], writable_base: :staged_path
+      end
 
 release:
   github:
