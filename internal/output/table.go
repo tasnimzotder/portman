@@ -32,11 +32,11 @@ func (f *TableFormatter) formatTable(listeners []model.Listener) string {
 	var sb strings.Builder
 
 	if !f.NoHeader {
-		header := fmt.Sprintf("  %-7s %-7s %-8s %-10s %-24s %6s  %s",
-			"PORT", "PROTO", "PID", "USER", "COMMAND", "CONNS", "UPTIME")
+		header := fmt.Sprintf("  %-7s %-7s %-8s %-10s %-24s %6s  %-12s %s",
+			"PORT", "PROTO", "PID", "USER", "COMMAND", "CONNS", "UPTIME", "ADDRESS")
 		sb.WriteString(style.Dim.Bold(true).Render(header))
 		sb.WriteString("\n")
-		sb.WriteString(style.Separator(76))
+		sb.WriteString(style.Separator(100))
 		sb.WriteString("\n")
 	}
 
@@ -72,10 +72,10 @@ func formatRow(l model.Listener) string {
 		connsStr = style.Accent.Render(connsStr)
 	}
 
-	return fmt.Sprintf("  %s %s %-8s %-10s %-24s %s  %s",
-		style.Port.Render(fmt.Sprintf("%-7d", l.Port)),
+	return fmt.Sprintf("  %s %s %-8s %-10s %-24s %s  %-12s %s",
+		style.PortNum(l.Port),
 		style.Proto(l.Protocol),
-		pid, user, command, connsStr, uptime)
+		pid, user, command, connsStr, uptime, l.Address)
 }
 
 func (f *TableFormatter) formatGrouped(listeners []model.Listener) string {
@@ -94,7 +94,7 @@ func (f *TableFormatter) formatGrouped(listeners []model.Listener) string {
 				uptime = FormatDuration(l.Process.UptimeSeconds)
 			}
 			fmt.Fprintf(&sb, "    %s  %-5s  %s  %s\n",
-				style.Accent.Render(fmt.Sprintf(":%d", l.Port)),
+				style.Accent.Render(fmt.Sprintf("%s:%d", l.Address, l.Port)),
 				l.Protocol,
 				style.Dim.Render(fmt.Sprintf("%d conns", l.ConnectionCount)),
 				style.Dim.Render(uptime),
@@ -151,7 +151,7 @@ func (f *TableFormatter) FormatTree(listeners []model.Listener, pid int) string 
 		}
 		fmt.Fprintf(&sb, "  %s %s  %s%s\n",
 			style.Dim.Render(connector),
-			style.Accent.Render(fmt.Sprintf(":%d", l.Port)),
+			style.Accent.Render(fmt.Sprintf("%s:%d", l.Address, l.Port)),
 			l.Protocol, conns,
 		)
 	}

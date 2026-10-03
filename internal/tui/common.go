@@ -6,9 +6,10 @@ import (
 	"strings"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
 	"charm.land/bubbles/v2/table"
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/term"
 	"github.com/tasnimzotder/portman/internal/model"
 	"github.com/tasnimzotder/portman/internal/output"
 	"github.com/tasnimzotder/portman/internal/style"
@@ -29,13 +30,9 @@ type portMsg struct {
 	err      error
 }
 
-// IsTerminal returns true if stdout is connected to a terminal.
+// IsTerminal requires both input and output to be actual terminals.
 func IsTerminal() bool {
-	fi, err := os.Stdout.Stat()
-	if err != nil {
-		return false
-	}
-	return fi.Mode()&os.ModeCharDevice != 0
+	return term.IsTerminal(os.Stdin.Fd()) && term.IsTerminal(os.Stdout.Fd())
 }
 
 // tick returns a Cmd that sends a tickMsg after the given interval.
@@ -61,6 +58,7 @@ var portTableColumns = []table.Column{
 	{Title: "COMMAND", Width: 24},
 	{Title: "CONNS", Width: 7},
 	{Title: "UPTIME", Width: 12},
+	{Title: "ADDRESS", Width: 24},
 }
 
 // tableWidth computes the total width from portTableColumns plus cell padding.
@@ -130,6 +128,7 @@ func buildPortRows(listeners []model.Listener) []table.Row {
 			command,
 			strconv.Itoa(l.ConnectionCount),
 			uptime,
+			l.Address,
 		})
 	}
 	return rows
@@ -149,4 +148,3 @@ func helpBar(items ...string) string {
 func joinHelp(items ...string) string {
 	return strings.Join(items, " · ")
 }
-

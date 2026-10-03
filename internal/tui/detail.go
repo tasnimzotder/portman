@@ -57,3 +57,5 @@ func (m DetailModel) View() tea.View {
 	content += style.Dim.Render("  Press any key to exit") + "\n"
 	return tea.NewView(content)
 }
+
+func (m DetailModel) Err() error { return m.err }

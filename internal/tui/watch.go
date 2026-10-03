@@ -21,12 +21,12 @@ type WatchModel struct {
 	udpOnly   bool
 	port      int // 0 = all ports, >0 = single port
 	listeners []model.Listener
-	previous  map[int]model.Listener
-	added     map[int]bool
-	removed   map[int]bool
+	previous  map[model.BindingKey]model.Listener
+	added     map[model.BindingKey]bool
+	removed   map[model.BindingKey]bool
 	listener  *model.Listener // single-port mode
 	prevSnap  *portSnapshot
-	prevConns map[int]int // port → previous connection count (for deltas)
+	prevConns map[model.BindingKey]int // port → previous connection count (for deltas)
 	err       error
 	loaded    bool
 	lastScan  time.Time
@@ -49,9 +49,9 @@ func NewWatchModel(s scanner.Scanner, interval time.Duration, sortBy string, tcp
 		tcpOnly:   tcpOnly,
 		udpOnly:   udpOnly,
 		port:      0,
-		added:     make(map[int]bool),
-		removed:   make(map[int]bool),
-		prevConns: make(map[int]int),
+		added:     make(map[model.BindingKey]bool),
+		removed:   make(map[model.BindingKey]bool),
+		prevConns: make(map[model.BindingKey]int),
 	}
 }
 
@@ -60,14 +60,14 @@ func NewWatchPortModel(s scanner.Scanner, port int, interval time.Duration) Watc
 		scanner:   s,
 		interval:  interval,
 		port:      port,
-		added:     make(map[int]bool),
-		removed:   make(map[int]bool),
-		prevConns: make(map[int]int),
+		added:     make(map[model.BindingKey]bool),
+		removed:   make(map[model.BindingKey]bool),
+		prevConns: make(map[model.BindingKey]int),
 	}
 }
 
 func (m WatchModel) Init() tea.Cmd {
-	return tea.Batch(m.fetch(), tick(m.interval))
+	return m.fetch()
 }
 
 func (m WatchModel) fetch() tea.Cmd {
@@ -88,28 +88,31 @@ func (m WatchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case listenersMsg:
 		if msg.err != nil {
 			m.err = msg.err
-			return m, nil
+			return m, tick(m.interval)
 		}
+		m.err = nil
 		filtered := filterByProtocol(msg.listeners, m.tcpOnly, m.udpOnly)
 		output.SortListeners(filtered, m.sortBy)
 		m.updateDiff(filtered)
 		m.listeners = filtered
 		m.loaded = true
 		m.lastScan = time.Now()
-		return m, nil
+		return m, tick(m.interval)
 
 	case portMsg:
 		if msg.err != nil {
 			m.err = msg.err
-			return m, nil
+			return m, tick(m.interval)
 		}
+		m.err = nil
+		m.prevSnap = snapshot(m.listener)
 		m.listener = msg.listener
 		m.loaded = true
 		m.lastScan = time.Now()
-		return m, nil
+		return m, tick(m.interval)
 
 	case tickMsg:
-		return m, tea.Batch(m.fetch(), tick(m.interval))
+		return m, m.fetch()
 
 	case tea.KeyPressMsg:
 		switch msg.String() {
@@ -122,13 +125,13 @@ func (m WatchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *WatchModel) updateDiff(current []model.Listener) {
-	currentMap := make(map[int]model.Listener, len(current))
+	currentMap := make(map[model.BindingKey]model.Listener, len(current))
 	for _, l := range current {
-		currentMap[l.Port] = l
+		currentMap[l.Key()] = l
 	}
 
-	m.added = make(map[int]bool)
-	m.removed = make(map[int]bool)
+	m.added = make(map[model.BindingKey]bool)
+	m.removed = make(map[model.BindingKey]bool)
 
 	if m.previous != nil {
 		for port := range currentMap {
@@ -144,11 +147,11 @@ func (m *WatchModel) updateDiff(current []model.Listener) {
 	}
 
 	// Track connection count deltas
-	newConns := make(map[int]int, len(current))
-	for _, l := range current {
-		newConns[l.Port] = l.ConnectionCount
+	m.prevConns = make(map[model.BindingKey]int, len(m.previous))
+	for key, l := range m.previous {
+		m.prevConns[key] = l.ConnectionCount
 	}
-	m.prevConns, m.previous = newConns, currentMap
+	m.previous = currentMap
 }
 
 func (m WatchModel) View() tea.View {
@@ -177,11 +180,11 @@ func (m WatchModel) viewAllPorts() tea.View {
 	}
 	sb.WriteString(StyleDim.Render(fmt.Sprintf("  %d ports · every %s · %s", len(m.listeners), m.interval, timestamp)))
 	sb.WriteString("\n")
-	sb.WriteString(StyleSubtle.Render("  " + strings.Repeat("─", 76)))
+	sb.WriteString(StyleSubtle.Render("  " + strings.Repeat("─", 100)))
 	sb.WriteString("\n")
 
 	// Column headers
-	sb.WriteString(fmt.Sprintf("  %-8s %-7s %-8s %-10s %-24s %6s  %s\n",
+	sb.WriteString(fmt.Sprintf("  %-8s %-7s %-8s %-10s %-24s %6s  %-12s %s\n",
 		StyleBold.Render("PORT"),
 		StyleBold.Render("PROTO"),
 		StyleBold.Render("PID"),
@@ -189,6 +192,7 @@ func (m WatchModel) viewAllPorts() tea.View {
 		StyleBold.Render("COMMAND"),
 		StyleBold.Render("CONNS"),
 		StyleBold.Render("UPTIME"),
+		StyleBold.Render("ADDRESS"),
 	))
 
 	if len(m.listeners) == 0 {
@@ -198,7 +202,7 @@ func (m WatchModel) viewAllPorts() tea.View {
 
 	for _, l := range m.listeners {
 		row := m.formatWatchRow(l)
-		if m.added[l.Port] {
+		if m.added[l.Key()] {
 			// Status indicator: new port
 			sb.WriteString(StyleSuccess.Render("+ ") + StyleSuccess.Render(row[2:])) // replace leading spaces
 		} else {
@@ -208,8 +212,8 @@ func (m WatchModel) viewAllPorts() tea.View {
 	}
 
 	// Show removed ports
-	for port := range m.removed {
-		sb.WriteString(StyleError.Render(fmt.Sprintf("- port %d removed", port)))
+	for key := range m.removed {
+		sb.WriteString(StyleError.Render(fmt.Sprintf("- %s %s:%d PID %d removed", key.Protocol, key.Address, key.Port, key.PID)))
 		sb.WriteString("\n")
 	}
 
@@ -254,7 +258,7 @@ func (m WatchModel) formatWatchRow(l model.Listener) string {
 
 	// Connection count with delta arrow
 	connsStr := fmt.Sprintf("%6d", l.ConnectionCount)
-	if prev, ok := m.prevConns[l.Port]; ok {
+	if prev, ok := m.prevConns[l.Key()]; ok {
 		delta := l.ConnectionCount - prev
 		if delta > 0 {
 			connsStr = StyleSuccess.Render(fmt.Sprintf("%4d +%d", l.ConnectionCount, delta))
@@ -274,11 +278,11 @@ func (m WatchModel) formatWatchRow(l model.Listener) string {
 		proto = StyleWarning.Render("udp")
 	}
 
-	return fmt.Sprintf("  %-8d %-7s %-8s %-10s %-24s %s  %s",
-		l.Port, proto, pid, user, command, connsStr, uptime)
+	return fmt.Sprintf("  %-8d %-7s %-8s %-10s %-24s %s  %-12s %s",
+		l.Port, proto, pid, user, command, connsStr, uptime, l.Address)
 }
 
-func (m *WatchModel) viewSinglePort() tea.View {
+func (m WatchModel) viewSinglePort() tea.View {
 	var sb strings.Builder
 
 	// Header with timestamp
@@ -299,21 +303,10 @@ func (m *WatchModel) viewSinglePort() tea.View {
 		sb.WriteString("\n\n")
 		sb.WriteString(StyleDim.Render("  q quit"))
 		sb.WriteString("\n")
-		m.prevSnap = nil
 		return fullscreenView(sb.String())
 	}
 
 	l := m.listener
-
-	var currentSnap portSnapshot
-	currentSnap.PID = l.PID
-	currentSnap.ConnectionCount = l.ConnectionCount
-	if l.Stats != nil {
-		currentSnap.MemoryRSS = l.Stats.MemoryRSS
-		currentSnap.CPUPercent = l.Stats.CPUPercent
-		currentSnap.FDCount = l.Stats.FDCount
-		currentSnap.ThreadCount = l.Stats.ThreadCount
-	}
 
 	// Process section
 	if l.Process != nil {
@@ -414,7 +407,21 @@ func (m *WatchModel) viewSinglePort() tea.View {
 	sb.WriteString(StyleDim.Render("  q quit"))
 	sb.WriteString("\n")
 
-	m.prevSnap = &currentSnap
-
 	return fullscreenView(sb.String())
 }
+
+func snapshot(l *model.Listener) *portSnapshot {
+	if l == nil {
+		return nil
+	}
+	snap := &portSnapshot{PID: l.PID, ConnectionCount: l.ConnectionCount}
+	if l.Stats != nil {
+		snap.MemoryRSS = l.Stats.MemoryRSS
+		snap.CPUPercent = l.Stats.CPUPercent
+		snap.FDCount = l.Stats.FDCount
+		snap.ThreadCount = l.Stats.ThreadCount
+	}
+	return snap
+}
+
+func (m WatchModel) Err() error { return m.err }

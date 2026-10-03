@@ -1,14 +1,15 @@
 package tui
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
 	"syscall"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
 	"charm.land/bubbles/v2/spinner"
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/tasnimzotder/portman/internal/kill"
 	"github.com/tasnimzotder/portman/internal/model"
@@ -27,6 +28,7 @@ const (
 type killResultMsg struct {
 	success bool
 	message string
+	err     error
 }
 
 type KillModel struct {
@@ -40,9 +42,10 @@ type KillModel struct {
 	spinner  spinner.Model
 	result   string
 	err      error
+	timeout  time.Duration
 }
 
-func NewKillModel(s scanner.Scanner, port int, sig syscall.Signal, sigName string, force bool) KillModel {
+func NewKillModel(s scanner.Scanner, port int, sig syscall.Signal, sigName string, force bool, timeout time.Duration) KillModel {
 	sp := spinner.New(
 		spinner.WithSpinner(spinner.Dot),
 		spinner.WithStyle(lipgloss.NewStyle().Foreground(ColorAccent)),
@@ -53,6 +56,7 @@ func NewKillModel(s scanner.Scanner, port int, sig syscall.Signal, sigName strin
 		signal:  sig,
 		sigName: sigName,
 		force:   force,
+		timeout: timeout,
 		phase:   killLoading,
 		spinner: sp,
 	}
@@ -69,52 +73,26 @@ func (m KillModel) fetchPort() tea.Cmd {
 	}
 }
 
+func (m KillModel) Outcome() error { return m.err }
+
 func (m KillModel) doKill() tea.Cmd {
 	pid := m.listener.PID
-	sig := m.signal
-	force := m.force
-
 	return func() tea.Msg {
-		err := kill.Kill(pid, sig)
+		current, err := m.scanner.GetPort(m.port)
+		if err == nil && (current == nil || current.PID != pid || current.Protocol != m.listener.Protocol) {
+			err = errors.New("port ownership changed; retry the command")
+		}
+		if err == nil {
+			err = kill.SendAndWait(pid, m.signal, m.timeout, m.force)
+		}
 		if err != nil {
-			if errors.Is(err, kill.ErrPermissionDenied) {
-				return killResultMsg{
-					success: false,
-					message: "Permission denied. Try running with sudo.",
-				}
-			}
-			return killResultMsg{
-				success: false,
-				message: fmt.Sprintf("Error: %v", err),
-			}
+			return killResultMsg{message: fmt.Sprintf("Error: %v", err), err: err}
 		}
-
-		if kill.WaitForExit(pid, 3*time.Second) {
-			return killResultMsg{
-				success: true,
-				message: "Process terminated.",
-			}
+		text := "Process terminated."
+		if m.signal == syscall.SIGHUP {
+			text = "SIGHUP sent."
 		}
-
-		if force && sig != syscall.SIGKILL {
-			if err := kill.Kill(pid, syscall.SIGKILL); err != nil {
-				return killResultMsg{
-					success: false,
-					message: fmt.Sprintf("SIGKILL failed: %v", err),
-				}
-			}
-			if kill.WaitForExit(pid, 2*time.Second) {
-				return killResultMsg{
-					success: true,
-					message: "Process killed (SIGKILL).",
-				}
-			}
-		}
-
-		return killResultMsg{
-			success: false,
-			message: "Process didn't terminate.",
-		}
+		return killResultMsg{success: true, message: text}
 	}
 }
 
@@ -128,7 +106,8 @@ func (m KillModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.listener == nil {
-			m.result = StyleDim.Render(fmt.Sprintf("Port %d is not in use.", m.port))
+			m.err = fmt.Errorf("port %d is not in use", m.port)
+			m.result = StyleDim.Render(m.err.Error())
 			m.phase = killDone
 			return m, nil
 		}
@@ -137,6 +116,7 @@ func (m KillModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case killResultMsg:
+		m.err = msg.err
 		if msg.success {
 			m.result = StyleSuccess.Render(msg.message)
 		} else {
@@ -147,12 +127,18 @@ func (m KillModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		switch m.phase {
+		case killLoading:
+			if msg.String() == "q" || msg.String() == "ctrl+c" {
+				m.err = context.Canceled
+				return m, tea.Quit
+			}
 		case killConfirm:
 			switch msg.String() {
 			case "y", "Y":
 				m.phase = killSending
 				return m, tea.Batch(m.spinner.Tick, m.doKill())
 			case "n", "N", "q", "ctrl+c":
+				m.err = context.Canceled
 				m.result = StyleDim.Render("Aborted.")
 				m.phase = killDone
 				return m, nil

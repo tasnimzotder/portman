@@ -2,8 +2,6 @@ package scanner
 
 import (
 	"errors"
-	"fmt"
-	"runtime"
 
 	"github.com/tasnimzotder/portman/internal/model"
 )
@@ -38,13 +36,4 @@ func DefaultOptions() Options {
 	}
 }
 
-func New(opts Options) (Scanner, error) {
-	switch runtime.GOOS {
-	case "linux":
-		return nil, ErrNotImplemented
-	case "darwin":
-		return NewDarwinScanner(opts), nil
-	default:
-		return nil, fmt.Errorf("%w: %s", ErrUnsupportedPlatform, runtime.GOOS)
-	}
-}
+func New(opts Options) (Scanner, error) { return newPlatformScanner(opts) }

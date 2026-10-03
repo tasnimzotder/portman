@@ -1,6 +1,7 @@
 package output
 
 import (
+	"encoding/csv"
 	"fmt"
 	"runtime"
 	"sort"
@@ -70,7 +71,7 @@ func getPlatform() string {
 
 // SortListeners sorts listeners by the specified field.
 func SortListeners(listeners []model.Listener, by string) {
-	sort.Slice(listeners, func(i, j int) bool {
+	sort.SliceStable(listeners, func(i, j int) bool {
 		switch strings.ToLower(by) {
 		case "pid":
 			return listeners[i].PID < listeners[j].PID
@@ -91,6 +92,47 @@ func SortListeners(listeners []model.Listener, by string) {
 			return listeners[i].Port < listeners[j].Port
 		}
 	})
+}
+
+// FormatDelimited renders listeners as CSV or TSV for piping into other tools.
+func FormatDelimited(listeners []model.Listener, format string, noHeader bool) string {
+	var sb strings.Builder
+	w := csv.NewWriter(&sb)
+	sep := ","
+	if format == "tsv" {
+		sep = "\t"
+	}
+
+	w.Comma = []rune(sep)[0]
+	if !noHeader {
+		_ = w.Write([]string{"PORT", "PROTO", "PID", "USER", "COMMAND", "CONNS", "UPTIME", "ADDRESS"})
+	}
+
+	for _, l := range listeners {
+		pid := ""
+		if l.PID > 0 {
+			pid = fmt.Sprintf("%d", l.PID)
+		}
+		uptime := ""
+		if l.Process != nil && l.Process.UptimeSeconds > 0 {
+			uptime = FormatDuration(l.Process.UptimeSeconds)
+		}
+
+		fields := []string{
+			fmt.Sprintf("%d", l.Port),
+			l.Protocol,
+			pid,
+			l.ProcessUser(),
+			l.ProcessName(),
+			fmt.Sprintf("%d", l.ConnectionCount),
+			uptime,
+			l.Address,
+		}
+		_ = w.Write(fields)
+	}
+
+	w.Flush()
+	return sb.String()
 }
 
 // ProcessGroup represents a set of listeners owned by the same process.

@@ -317,3 +317,14 @@ func TestIsPortOpen_Error(t *testing.T) {
 		t.Fatal("expected IsPortOpen=false when scanner returns an error")
 	}
 }
+
+func TestWaitPersistentErrorCannotSucceedInInvertMode(t *testing.T) {
+	want := errors.New("scan unavailable")
+	result := Wait(&mockScanner{err: want}, 34567, 30*time.Millisecond, time.Second, true)
+	if result.Success || !errors.Is(result.Err, want) || !errors.Is(result.Err, ErrTimeout) {
+		t.Fatalf("result=%+v", result)
+	}
+	if result.Elapsed > 300*time.Millisecond {
+		t.Fatalf("interval overshot deadline: %s", result.Elapsed)
+	}
+}

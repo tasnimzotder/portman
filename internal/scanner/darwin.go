@@ -5,8 +5,10 @@ package scanner
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -16,61 +18,123 @@ import (
 
 const cmdTimeout = 10 * time.Second
 
-type DarwinScanner struct {
-	opts Options
+type DarwinScanner struct{ opts Options }
+
+func NewDarwinScanner(opts Options) *DarwinScanner { return &DarwinScanner{opts: opts} }
+
+// An exit status of 1 with no output or diagnostics means no matching sockets.
+// Any other failure is an error, never evidence that a port is free.
+func runLsof(ctx context.Context, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "lsof", args...)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if ctx.Err() != nil {
+		return "", fmt.Errorf("lsof: %w", ctx.Err())
+	}
+	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == 1 && len(out) == 0 && stderr.Len() == 0 {
+			return "", nil
+		}
+		return "", fmt.Errorf("lsof failed: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	if stderr.Len() != 0 {
+		return "", fmt.Errorf("lsof: %s", strings.TrimSpace(stderr.String()))
+	}
+	return string(out), nil
 }
 
-func NewDarwinScanner(opts Options) *DarwinScanner {
-	return &DarwinScanner{opts: opts}
+func (s *DarwinScanner) scan(ctx context.Context, port int) ([]socketRecord, error) {
+	ctx, cancel := context.WithTimeout(ctx, cmdTimeout)
+	defer cancel()
+	selector := ""
+	if s.opts.IncludeTCP && !s.opts.IncludeUDP {
+		selector = "TCP"
+	}
+	if s.opts.IncludeUDP && !s.opts.IncludeTCP {
+		selector = "UDP"
+	}
+	if !s.opts.IncludeTCP && !s.opts.IncludeUDP {
+		return nil, nil
+	}
+	if port > 0 {
+		selector += fmt.Sprintf(":%d", port)
+	}
+	args := []string{"-n", "-P", "-F0pcuLfPtnT", "-i" + selector}
+	out, err := runLsof(ctx, args...)
+	if err != nil {
+		return nil, err
+	}
+	records, err := parseLsofFields(out)
+	if err != nil {
+		return nil, err
+	}
+	filtered := records[:0]
+	for _, r := range records {
+		if !s.opts.IncludeIPv6 && r.family == "IPv6" {
+			continue
+		}
+		if (r.protocol == model.ProtoTCP && s.opts.IncludeTCP) || (r.protocol == model.ProtoUDP && s.opts.IncludeUDP) {
+			filtered = append(filtered, r)
+		}
+	}
+	return filtered, nil
 }
 
 func (s *DarwinScanner) ListListeners() ([]model.Listener, error) {
-	args := []string{"-i", "-n", "-P"}
-	if s.opts.IncludeTCP && !s.opts.IncludeUDP {
-		args = append(args, "-sTCP:LISTEN")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "lsof", args...)
-	output, err := cmd.Output()
+	records, err := s.scan(context.Background(), 0)
 	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return nil, fmt.Errorf("lsof timed out after %s", cmdTimeout)
-		}
-		return nil, fmt.Errorf("lsof failed: %w", err)
+		return nil, err
 	}
-
-	return s.parseLsofOutput(string(output))
+	listeners := buildListeners(records, true)
+	for i := range listeners {
+		listeners[i].Connections = nil
+	}
+	return listeners, nil
 }
 
 func (s *DarwinScanner) GetPort(port int) (*model.Listener, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
-	defer cancel()
+	return s.GetPortContext(context.Background(), port)
+}
 
-	cmd := exec.CommandContext(ctx, "lsof",
-		"-i", fmt.Sprintf(":%d", port),
-		"-n", "-P",
-	)
-	output, err := cmd.Output()
+// GetPortContext allows wait deadlines and cancellation to stop lsof itself.
+func (s *DarwinScanner) GetPortContext(ctx context.Context, port int) (*model.Listener, error) {
+	return s.getPort(ctx, port, true)
+}
+
+// GetPortStatusContext checks occupancy without choosing an owner for an action.
+func (s *DarwinScanner) GetPortStatusContext(ctx context.Context, port int) (*model.Listener, error) {
+	return s.getPort(ctx, port, false)
+}
+
+func (s *DarwinScanner) getPort(ctx context.Context, port int, strict bool) (*model.Listener, error) {
+	records, err := s.scan(ctx, port)
 	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return nil, fmt.Errorf("lsof timed out after %s", cmdTimeout)
+		return nil, err
+	}
+	listeners := buildListeners(records, false)
+	var chosen *model.Listener
+	for i := range listeners {
+		if listeners[i].Port != port {
+			continue
 		}
-		return nil, nil
+		if strict && chosen != nil && (chosen.PID != listeners[i].PID || chosen.Protocol != listeners[i].Protocol) {
+			return nil, fmt.Errorf("port %d has multiple owners or protocols; use a port range or pid lookup to inspect each binding", port)
+		}
+		if chosen == nil {
+			chosen = &listeners[i]
+		}
 	}
-
-	listener, connections := s.parsePortDetail(string(output), port)
-	if listener == nil {
-		return nil, nil
+	if strict && chosen != nil && s.opts.FetchStats {
+		uptime := batchGetUptimes([]int{chosen.PID})[chosen.PID]
+		chosen.Process.UptimeSeconds = uptime
+		if uptime > 0 {
+			chosen.Process.StartTime = time.Now().Add(-time.Duration(uptime) * time.Second)
+		}
+		chosen.Stats = s.getProcessStats(chosen.PID)
 	}
-
-	listener.Connections = connections
-	listener.ConnectionCount = len(connections)
-	listener.Stats = s.getProcessStats(listener.PID)
-
-	return listener, nil
+	return chosen, nil
 }
 
 func (s *DarwinScanner) ListByPID(pid int) ([]model.Listener, error) {
@@ -78,8 +142,7 @@ func (s *DarwinScanner) ListByPID(pid int) ([]model.Listener, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	var matches []model.Listener
+	matches := make([]model.Listener, 0)
 	for _, l := range listeners {
 		if l.PID == pid {
 			matches = append(matches, l)
@@ -87,270 +150,244 @@ func (s *DarwinScanner) ListByPID(pid int) ([]model.Listener, error) {
 	}
 	return matches, nil
 }
-
-func (s *DarwinScanner) getProcessStats(pid int) *model.ProcessStats {
-	stats := &model.ProcessStats{}
-	pidStr := strconv.Itoa(pid)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "ps", "-o", "rss=,%cpu=", "-p", pidStr)
-	output, err := cmd.Output()
-	if err == nil {
-		fields := strings.Fields(string(output))
-		if len(fields) >= 2 {
-			if rss, err := strconv.ParseInt(fields[0], 10, 64); err == nil {
-				stats.MemoryRSS = rss * 1024
-			}
-			if cpu, err := strconv.ParseFloat(fields[1], 64); err == nil {
-				stats.CPUPercent = cpu
-			}
-		}
-	}
-
-	cmd = exec.CommandContext(ctx, "lsof", "-p", pidStr)
-	if fdOutput, err := cmd.Output(); err == nil {
-		lines := strings.Split(string(fdOutput), "\n")
-		if len(lines) > 2 {
-			stats.FDCount = len(lines) - 2
-		}
-	}
-
-	cmd = exec.CommandContext(ctx, "ps", "-M", "-p", pidStr)
-	if thOutput, err := cmd.Output(); err == nil {
-		lines := strings.Split(string(thOutput), "\n")
-		if len(lines) > 2 {
-			stats.ThreadCount = len(lines) - 2
-		}
-	}
-
-	return stats
-}
-
-func (s *DarwinScanner) parsePortDetail(output string, targetPort int) (*model.Listener, []model.Connection) {
-	var listener *model.Listener
-	var connections []model.Connection
-
-	scanner := bufio.NewScanner(strings.NewReader(output))
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		if strings.HasPrefix(line, "COMMAND") {
-			continue
-		}
-
-		fields := strings.Fields(line)
-		if len(fields) < 9 {
-			continue
-		}
-
-		command := decodeLsofEscapes(fields[0])
-		pid, _ := strconv.Atoi(fields[1])
-		user := fields[2]
-		protocol := strings.ToLower(fields[7])
-		name := fields[8]
-
-		state := ""
-		if len(fields) > 9 {
-			state = strings.Trim(fields[9], "()")
-		}
-
-		if state == model.StateListen {
-			addr, port := parseAddressPort(name)
-			if port == targetPort && listener == nil {
-				uptime := getProcessUptime(pid)
-				var startTime time.Time
-				if uptime > 0 {
-					startTime = time.Now().Add(-time.Duration(uptime) * time.Second)
-				}
-				listener = &model.Listener{
-					Port:     port,
-					Protocol: protocol,
-					Address:  addr,
-					PID:      pid,
-					Process: &model.Process{
-						PID:           pid,
-						Name:          command,
-						Command:       command,
-						User:          user,
-						UptimeSeconds: uptime,
-						StartTime:     startTime,
-					},
-				}
-			}
-		} else if state == model.StateEstablished && strings.Contains(name, "->") {
-			parts := strings.Split(name, "->")
-			if len(parts) == 2 {
-				localAddr, localPort := parseAddressPort(parts[0])
-				remoteAddr, remotePort := parseAddressPort(parts[1])
-
-				if localPort == targetPort {
-					connections = append(connections, model.Connection{
-						LocalAddr:  localAddr,
-						LocalPort:  localPort,
-						RemoteAddr: remoteAddr,
-						RemotePort: remotePort,
-						State:      state,
-					})
-				}
-			}
-		}
-	}
-
-	return listener, connections
-}
-
 func (s *DarwinScanner) FindByPattern(pattern string) ([]model.Listener, error) {
 	listeners, err := s.ListListeners()
 	if err != nil {
 		return nil, err
 	}
-
-	var matches []model.Listener
-	patternLower := strings.ToLower(pattern)
-	patternNum, isNum := strconv.Atoi(pattern)
-
+	matches := make([]model.Listener, 0)
+	pattern = strings.ToLower(pattern)
+	number, numericErr := strconv.Atoi(pattern)
 	for _, l := range listeners {
-		if isNum == nil && l.Port == patternNum {
-			matches = append(matches, l)
-			continue
-		}
-		if isNum == nil && l.PID == patternNum {
-			matches = append(matches, l)
-			continue
-		}
-		if l.Process == nil {
-			continue
-		}
-
-		name := strings.ToLower(l.Process.Name)
-		cmd := strings.ToLower(l.Process.Command)
-		user := strings.ToLower(l.Process.User)
-
-		if strings.Contains(name, patternLower) ||
-			strings.Contains(cmd, patternLower) ||
-			strings.Contains(user, patternLower) {
+		if numericErr == nil && (l.Port == number || l.PID == number) || strings.Contains(strings.ToLower(l.ProcessName()), pattern) || strings.Contains(strings.ToLower(l.ProcessUser()), pattern) {
 			matches = append(matches, l)
 		}
 	}
-
 	return matches, nil
 }
 
-type lsofEntry struct {
-	command  string
-	pid      int
-	user     string
-	protocol string
-	port     int
-	address  string
-	state    string
+// socketRecord is one file record from lsof's NUL-delimited field output.
+type socketRecord struct {
+	pid, uid                                     int
+	command, user, family, protocol, name, state string
 }
 
-func (s *DarwinScanner) parseLsofOutput(output string) ([]model.Listener, error) {
-	entries, connCount, err := parseLsofLines(output)
-	if err != nil {
-		return nil, err
+func parseLsofFields(out string) ([]socketRecord, error) {
+	if out != "" && !strings.Contains(out, "\x00") {
+		return nil, fmt.Errorf("invalid lsof field output")
 	}
-	return deduplicateEntries(entries, connCount), nil
+	var records []socketRecord
+	var process, file socketRecord
+	inFile := false
+	flush := func() {
+		if inFile && file.name != "" {
+			records = append(records, file)
+		}
+		inFile = false
+	}
+	for _, raw := range strings.Split(out, "\x00") {
+		field := strings.TrimLeft(raw, "\n")
+		if field == "" {
+			continue
+		}
+		value := field[1:]
+		switch field[0] {
+		case 'p':
+			flush()
+			pid, err := strconv.Atoi(value)
+			if err != nil || pid <= 0 {
+				return nil, fmt.Errorf("invalid lsof PID %q", value)
+			}
+			process = socketRecord{pid: pid}
+		case 'c':
+			process.command = decodeLsofEscapes(value)
+		case 'u':
+			process.uid, _ = strconv.Atoi(value)
+		case 'L':
+			process.user = decodeLsofEscapes(value)
+		case 'f':
+			flush()
+			file = process
+			inFile = true
+		case 't':
+			file.family = value
+		case 'P':
+			file.protocol = strings.ToLower(value)
+		case 'n':
+			file.name = value
+		case 'T':
+			if strings.HasPrefix(value, "ST=") {
+				file.state = strings.TrimPrefix(value, "ST=")
+			}
+		}
+	}
+	flush()
+	return records, nil
 }
 
-// parseLsofLines parses raw lsof output into entries and connection counts.
-func parseLsofLines(output string) ([]lsofEntry, map[int]int, error) {
-	var entries []lsofEntry
-	connCount := make(map[int]int)
-
-	sc := bufio.NewScanner(strings.NewReader(output))
-	for sc.Scan() {
-		line := sc.Text()
-		if strings.HasPrefix(line, "COMMAND") {
-			continue
-		}
-
-		fields := strings.Fields(line)
-		if len(fields) < 9 {
-			continue
-		}
-
-		command := decodeLsofEscapes(fields[0])
-		pid, _ := strconv.Atoi(fields[1])
-		user := fields[2]
-		protocol := strings.ToLower(fields[7])
-		name := fields[8]
-
-		state := ""
-		if len(fields) > 9 {
-			state = strings.Trim(fields[9], "()")
-		}
-
-		addr, port := parseLsofName(name)
-		if port == 0 {
-			continue
-		}
-
-		if state == model.StateEstablished {
-			connCount[port]++
-			continue
-		}
-		if state != model.StateListen {
-			continue
-		}
-
-		entries = append(entries, lsofEntry{
-			command: command, pid: pid, user: user,
-			protocol: protocol, port: port, address: addr, state: state,
-		})
-	}
-
-	return entries, connCount, sc.Err()
+func isBound(r socketRecord) bool {
+	return r.state == model.StateListen && r.protocol == model.ProtoTCP || r.protocol == model.ProtoUDP
 }
-
-// parseLsofName extracts address and port from the NAME field,
-// handling both "addr:port" and "addr:port->remote:port" formats.
-func parseLsofName(name string) (string, int) {
-	if strings.Contains(name, "->") {
-		return parseAddressPort(strings.Split(name, "->")[0])
+func buildListeners(records []socketRecord, enrich bool) []model.Listener {
+	listeners := make([]model.Listener, 0)
+	seen := make(map[model.BindingKey]bool)
+	pids := make(map[int]bool)
+	type connectionKey struct {
+		pid, port int
+		protocol  string
 	}
-	return parseAddressPort(name)
-}
-
-// deduplicateEntries builds model.Listener slice from entries,
-// deduplicating by port and enriching with uptime.
-func deduplicateEntries(entries []lsofEntry, connCount map[int]int) []model.Listener {
-	var listeners []model.Listener
-	seen := make(map[int]bool)
-
-	for _, e := range entries {
-		if seen[e.port] {
+	connections := make(map[connectionKey][]socketRecord)
+	for _, r := range records {
+		if r.state != model.StateEstablished {
 			continue
 		}
-		seen[e.port] = true
-
-		uptime := getProcessUptime(e.pid)
-		var startTime time.Time
-		if uptime > 0 {
-			startTime = time.Now().Add(-time.Duration(uptime) * time.Second)
+		endpoints := strings.SplitN(r.name, "->", 2)
+		if len(endpoints) != 2 {
+			continue
 		}
-
-		listeners = append(listeners, model.Listener{
-			Port:            e.port,
-			Protocol:        e.protocol,
-			Address:         e.address,
-			PID:             e.pid,
-			ConnectionCount: connCount[e.port],
-			Process: &model.Process{
-				PID:           e.pid,
-				Name:          e.command,
-				Command:       e.command,
-				User:          e.user,
-				UptimeSeconds: uptime,
-				StartTime:     startTime,
-			},
-		})
+		_, port := parseAddressPort(endpoints[0])
+		key := connectionKey{r.pid, port, r.protocol}
+		connections[key] = append(connections[key], r)
 	}
-
+	for _, r := range records {
+		if !isBound(r) {
+			continue
+		}
+		addr, port := parseAddressPort(strings.SplitN(r.name, "->", 2)[0])
+		if port < 1 || port > 65535 {
+			continue
+		}
+		if r.family == "IPv6" && r.name == fmt.Sprintf("*:%d", port) {
+			addr = "::"
+		}
+		l := model.Listener{Port: port, Protocol: r.protocol, Address: addr, PID: r.pid,
+			Process: &model.Process{PID: r.pid, UID: r.uid, Name: r.command, Command: r.command, User: r.user}}
+		key := l.Key()
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		pids[r.pid] = true
+		for _, c := range connections[connectionKey{r.pid, port, r.protocol}] {
+			if c.family != r.family {
+				continue
+			}
+			endpoints := strings.SplitN(c.name, "->", 2)
+			if len(endpoints) != 2 {
+				continue
+			}
+			local, lp := parseAddressPort(endpoints[0])
+			remote, rp := parseAddressPort(endpoints[1])
+			if lp != port || addr != "0.0.0.0" && addr != "::" && addr != local {
+				continue
+			}
+			l.Connections = append(l.Connections, model.Connection{LocalAddr: local, LocalPort: lp, RemoteAddr: remote, RemotePort: rp, State: c.state})
+		}
+		l.ConnectionCount = len(l.Connections)
+		listeners = append(listeners, l)
+	}
+	if enrich {
+		ids := make([]int, 0, len(pids))
+		for pid := range pids {
+			ids = append(ids, pid)
+		}
+		uptimes := batchGetUptimes(ids)
+		for i := range listeners {
+			p := listeners[i].Process
+			p.UptimeSeconds = uptimes[p.PID]
+			if p.UptimeSeconds > 0 {
+				p.StartTime = time.Now().Add(-time.Duration(p.UptimeSeconds) * time.Second)
+			}
+		}
+	}
+	sort.Slice(listeners, func(i, j int) bool {
+		a, b := listeners[i], listeners[j]
+		if a.Port != b.Port {
+			return a.Port < b.Port
+		}
+		if a.Protocol != b.Protocol {
+			return a.Protocol < b.Protocol
+		}
+		if a.PID != b.PID {
+			return a.PID < b.PID
+		}
+		return a.Address < b.Address
+	})
 	return listeners
+}
+
+func (s *DarwinScanner) getProcessStats(pid int) *model.ProcessStats {
+	stats := &model.ProcessStats{}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	id := strconv.Itoa(pid)
+	out, err := exec.CommandContext(ctx, "ps", "-o", "rss=,%cpu=", "-p", id).Output()
+	if err == nil {
+		f := strings.Fields(string(out))
+		if len(f) >= 2 {
+			rss, _ := strconv.ParseInt(f[0], 10, 64)
+			stats.MemoryRSS = rss * 1024
+			stats.CPUPercent, _ = strconv.ParseFloat(f[1], 64)
+		}
+	}
+	out, err = exec.CommandContext(ctx, "lsof", "-p", id, "-Ff").Output()
+	if err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			if strings.HasPrefix(line, "f") {
+				fd := strings.TrimSuffix(strings.TrimPrefix(line, "f"), "u")
+				if _, err := strconv.Atoi(fd); err == nil {
+					stats.FDCount++
+				}
+			}
+		}
+	}
+	out, err = exec.CommandContext(ctx, "ps", "-M", "-p", id).Output()
+	if err == nil {
+		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+		if len(lines) > 1 {
+			stats.ThreadCount = len(lines) - 1
+		}
+	}
+	return stats
+}
+
+func batchGetUptimes(pids []int) map[int]int64 {
+	result := make(map[int]int64, len(pids))
+	if len(pids) == 0 {
+		return result
+	}
+
+	// Build comma-separated PID list for ps -p
+	pidStrs := make([]string, len(pids))
+	for i, pid := range pids {
+		pidStrs[i] = strconv.Itoa(pid)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "ps", "-o", "pid=,etime=", "-p", strings.Join(pidStrs, ","))
+	output, err := cmd.Output()
+	if err != nil {
+		// Fallback: return empty (all uptimes will be 0)
+		return result
+	}
+
+	// Parse output lines: "  1234   1-02:03:04"
+	sc := bufio.NewScanner(strings.NewReader(string(output)))
+	for sc.Scan() {
+		fields := strings.Fields(sc.Text())
+		if len(fields) < 2 {
+			continue
+		}
+		pid, err := strconv.Atoi(fields[0])
+		if err != nil {
+			continue
+		}
+		result[pid] = parseElapsedTime(fields[1])
+	}
+
+	return result
 }
 
 // decodeLsofEscapes decodes \xNN hex escape sequences that lsof uses for
@@ -421,16 +458,6 @@ func parseAddressPort(name string) (string, int) {
 	return addr, port
 }
 
-func getProcessUptime(pid int) int64 {
-	cmd := exec.Command("ps", "-o", "etime=", "-p", strconv.Itoa(pid))
-	output, err := cmd.Output()
-	if err != nil {
-		return 0
-	}
-
-	return parseElapsedTime(strings.TrimSpace(string(output)))
-}
-
 func parseElapsedTime(etime string) int64 {
 	var days, hours, minutes, seconds int64
 
@@ -453,3 +480,5 @@ func parseElapsedTime(etime string) int64 {
 
 	return days*86400 + hours*3600 + minutes*60 + seconds
 }
+
+func newPlatformScanner(opts Options) (Scanner, error) { return NewDarwinScanner(opts), nil }

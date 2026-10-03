@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 
-	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
 	"github.com/tasnimzotder/portman/internal/tui"
 )
@@ -28,14 +27,12 @@ var portCmd = &cobra.Command{
 				return fmt.Errorf("watch mode requires an interactive terminal")
 			}
 			m := tui.NewWatchPortModel(s, port, watchInterval)
-			_, err := tea.NewProgram(m).Run()
-			return err
+			return runInspectionTUI(m)
 		}
 
-		if interactive && tui.IsTerminal() {
+		if interactive && !jsonOutput && outputFormat == "" && tui.IsTerminal() {
 			m := tui.NewDetailModel(s, port)
-			_, err := tea.NewProgram(m).Run()
-			return err
+			return runInspectionTUI(m)
 		}
 
 		return showPortDetail(s, port)

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -24,29 +25,30 @@ var (
 )
 
 func init() {
-	killCmd.Flags().BoolVarP(&killForce, "force", "f", false, "Use SIGKILL instead of SIGTERM")
+	killCmd.Flags().BoolVarP(&killForce, "force", "f", false, "Send SIGTERM, then SIGKILL if the process outlives --timeout")
 	killCmd.Flags().BoolVarP(&killYes, "yes", "y", false, "Skip confirmation")
 	killCmd.Flags().StringVarP(&killSignal, "signal", "s", "TERM", "Signal to send (HUP, INT, TERM, KILL)")
-	killCmd.Flags().DurationVar(&killTimeout, "timeout", 5*time.Second, "Wait time before SIGKILL (with --force)")
+	killCmd.Flags().DurationVar(&killTimeout, "timeout", 5*time.Second, "Time to wait for exit; escalate to SIGKILL with --force")
 	killCmd.Flags().BoolVarP(&killQuiet, "quiet", "q", false, "No output on success")
 }
 
 var killCmd = &cobra.Command{
-	Use:   "kill <port>",
-	Short: "Kill the process using a port",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runKill,
+	Use:               "kill <port>",
+	Short:             "Kill the process using a port",
+	Args:              cobra.ExactArgs(1),
+	RunE:              runKill,
+	ValidArgsFunction: completePortArgs,
 }
 
 func resolveSignal() (syscall.Signal, string, error) {
-	if killForce {
-		return syscall.SIGKILL, "KILL", nil
-	}
 	sig, ok := kill.ParseSignal(killSignal)
 	if !ok {
 		return 0, "", fmt.Errorf("unknown signal: %s (valid: HUP, INT, TERM, KILL)", killSignal)
 	}
-	return sig, strings.ToUpper(killSignal), nil
+	if killForce && sig != syscall.SIGTERM && sig != syscall.SIGKILL {
+		return 0, "", fmt.Errorf("--force requires TERM or KILL")
+	}
+	return sig, strings.TrimPrefix(strings.ToUpper(killSignal), "SIG"), nil
 }
 
 func runKill(cmd *cobra.Command, args []string) error {
@@ -84,9 +86,12 @@ func runKill(cmd *cobra.Command, args []string) error {
 
 	// TUI kill for interactive terminals (unless --yes or --quiet)
 	if tui.IsTerminal() && !killYes && !killQuiet {
-		m := tui.NewKillModel(s, port, sig, sigName, killForce)
-		_, err := tea.NewProgram(m).Run()
-		return err
+		m := tui.NewKillModel(s, port, sig, sigName, killForce, killTimeout)
+		final, err := tea.NewProgram(m).Run()
+		if err != nil {
+			return err
+		}
+		return final.(tui.KillModel).Outcome()
 	}
 
 	// Text confirmation
@@ -109,42 +114,30 @@ func runKill(cmd *cobra.Command, args []string) error {
 		answer := strings.TrimSpace(strings.ToLower(input))
 		if answer != "y" && answer != "yes" {
 			fmt.Println("Aborted.")
-			return nil
+			return context.Canceled
 		}
 	}
 
-	if !killQuiet {
-		fmt.Printf("Sent SIG%s to PID %d\n", sigName, pid)
+	// Recheck ownership after confirmation; never signal a stale selection.
+	current, err := s.GetPort(port)
+	if err != nil {
+		return err
 	}
-
-	if err := kill.Kill(pid, sig); err != nil {
+	if current == nil || current.PID != pid || current.Protocol != listener.Protocol {
+		return fmt.Errorf("port ownership changed; retry the command")
+	}
+	if err := kill.SendAndWait(pid, sig, killTimeout, killForce); err != nil {
 		if errors.Is(err, kill.ErrPermissionDenied) {
 			return fmt.Errorf("permission denied — try running with sudo")
 		}
 		return err
 	}
-
-	if kill.WaitForExit(pid, 3*time.Second) {
-		if !killQuiet {
-			fmt.Println("Process terminated.")
-		}
-		return nil
-	}
-
-	if killForce && sig != syscall.SIGKILL {
-		if !killQuiet {
-			fmt.Println("Process didn't exit, sending SIGKILL...")
-		}
-		if err := kill.Kill(pid, syscall.SIGKILL); err != nil {
-			return fmt.Errorf("SIGKILL failed: %w", err)
-		}
-		if kill.WaitForExit(pid, 2*time.Second) {
-			if !killQuiet {
-				fmt.Println("Process killed.")
-			}
-			return nil
+	if !killQuiet {
+		if sig == syscall.SIGHUP {
+			fmt.Printf("Sent SIGHUP to PID %d\n", pid)
+		} else {
+			fmt.Printf("Process %d terminated.\n", pid)
 		}
 	}
-
-	return fmt.Errorf("process %d didn't terminate", pid)
+	return nil
 }

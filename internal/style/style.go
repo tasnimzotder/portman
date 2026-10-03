@@ -59,6 +59,20 @@ func Proto(protocol string) string {
 	}
 }
 
+// PortNum returns a styled port number based on IANA range:
+// system/well-known (0-1023), registered (1024-49151), ephemeral (49152+).
+func PortNum(port int) string {
+	s := fmt.Sprintf("%-7d", port)
+	switch {
+	case port < 1024:
+		return Bold.Foreground(ColorWarning).Render(s)
+	case port >= 49152:
+		return Bold.Foreground(ColorDim).Render(s)
+	default:
+		return Bold.Render(s)
+	}
+}
+
 // KV formats a label-value pair for detail views.
 func KV(key, value string) string {
 	return fmt.Sprintf("    %s %s\n",

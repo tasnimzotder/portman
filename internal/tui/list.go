@@ -3,14 +3,15 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"os/exec"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/table"
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/tasnimzotder/portman/internal/kill"
 	"github.com/tasnimzotder/portman/internal/model"
@@ -41,6 +42,7 @@ type ListModel struct {
 	table     table.Model
 	scanner   scanner.Scanner
 	sortBy    string
+	pidFilter int
 	tcpOnly   bool
 	udpOnly   bool
 	listeners []model.Listener
@@ -62,6 +64,10 @@ type ListModel struct {
 
 	// Double-q to quit
 	lastQPress time.Time
+
+	// Status flash message (e.g. "Copied!")
+	statusMsg  string
+	statusTime time.Time
 }
 
 func NewListModel(s scanner.Scanner, sortBy string, tcpOnly, udpOnly bool) ListModel {
@@ -80,7 +86,7 @@ func NewListModel(s scanner.Scanner, sortBy string, tcpOnly, udpOnly bool) ListM
 	}
 }
 
-func NewListModelWithData(listeners []model.Listener, sortBy string) ListModel {
+func NewListModelWithData(listeners []model.Listener, sortBy string, scanners ...scanner.Scanner) ListModel {
 	output.SortListeners(listeners, sortBy)
 	sp := spinner.New(
 		spinner.WithSpinner(spinner.Dot),
@@ -94,6 +100,12 @@ func NewListModelWithData(listeners []model.Listener, sortBy string) ListModel {
 		view:      viewList,
 		spinner:   sp,
 	}
+	if len(scanners) > 0 {
+		m.scanner = scanners[0]
+		if len(listeners) > 0 {
+			m.pidFilter = listeners[0].PID
+		}
+	}
 	m.table.SetRows(buildPortRows(listeners))
 	return m
 }
@@ -106,7 +118,13 @@ func (m ListModel) Init() tea.Cmd {
 }
 
 func (m ListModel) fetchListeners() tea.Msg {
-	listeners, err := m.scanner.ListListeners()
+	var listeners []model.Listener
+	var err error
+	if m.pidFilter > 0 {
+		listeners, err = m.scanner.ListByPID(m.pidFilter)
+	} else {
+		listeners, err = m.scanner.ListListeners()
+	}
 	return listenersMsg{listeners: listeners, err: err}
 }
 
@@ -117,6 +135,7 @@ func (m ListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.err
 			return m, tea.Quit
 		}
+		m.err = nil
 		m.listeners = filterByProtocol(msg.listeners, m.tcpOnly, m.udpOnly)
 		output.SortListeners(m.listeners, m.sortBy)
 		m.table.SetRows(buildPortRows(m.listeners))
@@ -126,9 +145,7 @@ func (m ListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case portMsg:
 		m.detail = msg.listener
 		m.detailOK = true
-		if msg.err != nil {
-			m.err = msg.err
-		}
+		m.err = msg.err
 		m.view = viewDetail
 		return m, nil
 
@@ -137,6 +154,7 @@ func (m ListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.err
 			return m, nil
 		}
+		m.err = nil
 		m.pidPorts = msg.listeners
 		m.pidNum = msg.pid
 		m.view = viewPIDPorts
@@ -149,6 +167,15 @@ func (m ListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.killResult = StyleError.Render(msg.message)
 		}
 		m.view = viewKillResult
+		return m, nil
+
+	case clipboardMsg:
+		if msg.err == nil {
+			m.statusMsg = "Copied!"
+		} else {
+			m.statusMsg = "Copy failed"
+		}
+		m.statusTime = time.Now()
 		return m, nil
 
 	case spinner.TickMsg:
@@ -218,6 +245,10 @@ func (m ListModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if m.detail != nil && m.detail.PID > 0 {
 				m.view = viewKillConfirm
 				return m, nil
+			}
+		case "c":
+			if m.detail != nil {
+				return m, m.copyToClipboard()
 			}
 		}
 		return m, nil
@@ -310,19 +341,19 @@ func (m ListModel) doKill() tea.Cmd {
 	if m.detail == nil {
 		return nil
 	}
-	pid := m.detail.PID
+	expected := *m.detail
 	return func() tea.Msg {
-		err := kill.Kill(pid, syscall.SIGTERM)
+		current, err := m.scanner.GetPort(expected.Port)
+		if err == nil && (current == nil || current.PID != expected.PID || current.Protocol != expected.Protocol) {
+			err = errors.New("port ownership changed; refresh and retry")
+		}
+		if err == nil {
+			err = kill.SendAndWait(expected.PID, syscall.SIGTERM, 5*time.Second, false)
+		}
 		if err != nil {
-			if errors.Is(err, kill.ErrPermissionDenied) {
-				return killResultMsg{success: false, message: "Permission denied. Try sudo."}
-			}
-			return killResultMsg{success: false, message: fmt.Sprintf("Error: %v", err)}
+			return killResultMsg{message: fmt.Sprintf("Error: %v", err), err: err}
 		}
-		if kill.WaitForExit(pid, 3*time.Second) {
-			return killResultMsg{success: true, message: "Process terminated."}
-		}
-		return killResultMsg{success: false, message: "Process didn't terminate."}
+		return killResultMsg{success: true, message: "Process terminated."}
 	}
 }
 
@@ -384,7 +415,11 @@ func (m ListModel) viewDetail() tea.View {
 	}
 
 	content := "\n" + output.RenderDetail(m.detail)
-	content += helpBar("r refresh", "p pid ports", "k kill", "esc back", "qq quit") + "\n"
+	bar := helpBar("r refresh", "p pid ports", "k kill", "c copy", "esc back", "qq quit")
+	if m.statusMsg != "" && time.Since(m.statusTime) < 2*time.Second {
+		bar += "  " + StyleSuccess.Render(m.statusMsg)
+	}
+	content += bar + "\n"
 	return fullscreenView(content)
 }
 
@@ -454,3 +489,20 @@ func (m *ListModel) cycleSortBy() {
 	}
 	m.sortBy = sortOptions[0]
 }
+
+type clipboardMsg struct{ err error }
+
+func (m ListModel) copyToClipboard() tea.Cmd {
+	if m.detail == nil {
+		return nil
+	}
+	l := m.detail
+	text := fmt.Sprintf("port:%d pid:%d %s", l.Port, l.PID, l.ProcessName())
+	return func() tea.Msg {
+		cmd := exec.Command("pbcopy")
+		cmd.Stdin = strings.NewReader(text)
+		return clipboardMsg{err: cmd.Run()}
+	}
+}
+
+func (m ListModel) Err() error { return m.err }

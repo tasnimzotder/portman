@@ -42,7 +42,7 @@ func runExecCommand(cmdStr string) error {
 	execCmd.Stdin = os.Stdin
 	if err := execCmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
-			os.Exit(exitErr.ExitCode())
+			return &ExitError{Code: exitErr.ExitCode(), Err: err, Silent: waitQuiet}
 		}
 		return err
 	}
@@ -55,7 +55,7 @@ func runWait(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	s, err := newScanner()
+	s, err := newScannerWithStats(false)
 	if err != nil {
 		return err
 	}
@@ -63,8 +63,14 @@ func runWait(cmd *cobra.Command, args []string) error {
 	// TUI wait for interactive terminals
 	if !waitQuiet && tui.IsTerminal() {
 		m := tui.NewWaitModel(s, port, waitTimeout, waitCmdInterval, waitInvert)
-		if _, err := tea.NewProgram(m).Run(); err != nil {
+		defer m.Cancel()
+		final, err := tea.NewProgram(m).Run()
+		if err != nil {
 			return err
+		}
+		result := final.(tui.WaitModel).Outcome()
+		if !result.Success {
+			return result.Err
 		}
 		if waitExec != "" {
 			return runExecCommand(waitExec)
@@ -92,7 +98,7 @@ func runWait(cmd *cobra.Command, args []string) error {
 				fmt.Println("is not available.")
 			}
 		}
-		os.Exit(1)
+		return &ExitError{Code: 1, Err: result.Err, Silent: waitQuiet}
 	}
 
 	if !waitQuiet {

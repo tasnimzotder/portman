@@ -18,7 +18,7 @@ sudo mv portman /usr/local/bin/
 
 ## Build from Source
 
-Requires Go 1.21+
+Requires Go 1.25.6 or newer (see `go.mod`).
 
 ```bash
 git clone https://github.com/tasnimzotder/portman.git
@@ -30,7 +30,7 @@ sudo mv portman /usr/local/bin/
 ## Verify Installation
 
 ```bash
-portman --version
+portman version
 ```
 
 ## Platform Support

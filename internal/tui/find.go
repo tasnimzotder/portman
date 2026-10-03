@@ -79,3 +79,5 @@ func (m FindModel) View() tea.View {
 	sb.WriteString("\n")
 	return tea.NewView(sb.String())
 }
+
+func (m FindModel) Err() error { return m.err }

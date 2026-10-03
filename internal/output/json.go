@@ -18,6 +18,9 @@ func NewJSONFormatter(pretty bool) *JSONFormatter {
 
 func (f *JSONFormatter) Format(listeners []model.Listener) (string, error) {
 	hostname, _ := os.Hostname()
+	if listeners == nil {
+		listeners = []model.Listener{}
+	}
 
 	result := model.ScanResult{
 		Listeners: listeners,

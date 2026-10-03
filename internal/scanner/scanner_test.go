@@ -292,7 +292,7 @@ postgres 9999   pg     10u  IPv4   0xabc       0t0  TCP 127.0.0.1:5432 (LISTEN)`
 	}
 }
 
-func TestParseLsofOutput_DeduplicatesListenersByPort(t *testing.T) {
+func TestParseLsofOutput_PreservesDistinctAddresses(t *testing.T) {
 	// Same port, different file descriptors (e.g., IPv4 + IPv6)
 	output := `COMMAND   PID   USER   FD   TYPE   DEVICE SIZE/OFF NODE NAME
 nginx    5678   root    6u  IPv4   0x123       0t0  TCP *:80 (LISTEN)
@@ -303,8 +303,8 @@ nginx    5678   root    7u  IPv6   0x456       0t0  TCP [::]:80 (LISTEN)`
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(listeners) != 1 {
-		t.Fatalf("expected 1 deduplicated listener, got %d", len(listeners))
+	if len(listeners) != 2 {
+		t.Fatalf("expected 2 distinct bindings, got %d", len(listeners))
 	}
 	if listeners[0].Port != 80 {
 		t.Errorf("port: got %d, want 80", listeners[0].Port)
@@ -411,8 +411,7 @@ node     1234   dev     8u  IPv6   0x789       0t0  TCP [::1]:3000 (LISTEN)`
 }
 
 func TestParseLsofOutput_UDPEntry(t *testing.T) {
-	// UDP entries don't have a state like "(LISTEN)" — they should be skipped
-	// since the code requires state == "LISTEN" for entries.
+	// Bound UDP entries have no TCP LISTEN state.
 	output := `COMMAND   PID   USER   FD   TYPE   DEVICE SIZE/OFF NODE NAME
 mDNSResp  123   root    6u  IPv4   0x123       0t0  UDP *:5353`
 
@@ -421,8 +420,8 @@ mDNSResp  123   root    6u  IPv4   0x123       0t0  UDP *:5353`
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(listeners) != 0 {
-		t.Errorf("expected 0 listeners for UDP without LISTEN state, got %d", len(listeners))
+	if len(listeners) != 1 {
+		t.Errorf("expected one bound UDP socket, got %d", len(listeners))
 	}
 }
 
@@ -566,9 +565,9 @@ nginx    5678   root    7u  IPv4   0x456       0t0  TCP 10.0.0.1:80->192.168.1.1
 	if listener != nil {
 		t.Error("expected nil listener when no LISTEN entry exists")
 	}
-	// But connections are still collected
-	if len(connections) != 1 {
-		t.Errorf("expected 1 connection, got %d", len(connections))
+	// Connections without a listening owner are not attributed to a listener.
+	if len(connections) != 0 {
+		t.Errorf("expected no attributed connections, got %d", len(connections))
 	}
 }
 

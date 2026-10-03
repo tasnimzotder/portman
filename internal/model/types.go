@@ -77,6 +77,18 @@ type Listener struct {
 	Stats           *ProcessStats `json:"stats,omitempty"`
 }
 
+// BindingKey identifies an individual socket owner and listening address.
+type BindingKey struct {
+	Port     int
+	Protocol string
+	Address  string
+	PID      int
+}
+
+func (l Listener) Key() BindingKey {
+	return BindingKey{Port: l.Port, Protocol: l.Protocol, Address: l.Address, PID: l.PID}
+}
+
 // ProcessName returns the display name of the owning process.
 func (l *Listener) ProcessName() string {
 	return l.Process.DisplayName()
