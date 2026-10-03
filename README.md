@@ -40,6 +40,7 @@ portman wait 5432        # Wait for port to be available
 | `portman kill <port>`    | Kill process on port          |
 | `portman wait <port>`    | Wait for port availability    |
 | `portman pid <pid>`      | Find ports by PID             |
+| `portman conflicts`      | Show development ports and duplicate owners |
 | `portman version`        | Print version information     |
 
 ## Flags
@@ -54,24 +55,27 @@ portman wait 5432        # Wait for port to be available
 | `--sort`        | Sort by: port, pid, user, conns, uptime |
 | `--watch`, `-w` | Live-updating display                   |
 | `--interval`    | Watch refresh interval (default: 1s)    |
+| `--interactive`, `-i` | Interactive list or detail view |
+| `--group`, `-g` | Group bindings by process |
+| `--format` | CSV or TSV output |
 | `--no-header`   | Omit header row                         |
 
 ### kill
 
 | Flag             | Description                             |
 | ---------------- | --------------------------------------- |
-| `--force`, `-f`  | Use SIGKILL instead of SIGTERM          |
+| `--force`, `-f`  | SIGTERM, then SIGKILL after timeout          |
 | `--yes`, `-y`    | Skip confirmation                       |
 | `--signal`, `-s` | Signal to send (HUP, INT, TERM, KILL)   |
 | `--quiet`, `-q`  | No output on success                    |
-| `--timeout`      | Wait time before SIGKILL (with --force) |
+| `--timeout`      | Wait for exit (default: 5s); escalate with --force |
 
 ### wait
 
 | Flag               | Description                      |
 | ------------------ | -------------------------------- |
 | `--timeout`        | Maximum wait time (default: 30s) |
-| `--interval`, `-i` | Check interval (default: 100ms)  |
+| `--interval`, `-I` | Check interval (default: 100ms)  |
 | `--exec`, `-e`     | Command to run once available    |
 | `--invert`         | Wait for port to be FREE instead |
 | `--quiet`, `-q`    | No output, just exit code        |
@@ -89,6 +93,22 @@ portman port 3000 --watch    # Watch single port with stats
 - New ports highlighted in green
 - Changed values highlighted in yellow
 - Removed ports shown briefly in red
+
+## Behavior and development
+
+Portman lists TCP listeners and bound UDP sockets. Each address, protocol, port, and PID is a separate binding. Single-port detail and kill commands reject ambiguous owners or protocols; inspect all bindings with `portman 3000-3000 --json` or filter with `--tcp` / `--udp`.
+
+JSON, CSV, and TSV apply to inspection commands. Empty collection JSON contains `"listeners": []`. Watch requires an input and output terminal and cannot be combined with machine-readable output.
+
+`wait` checks socket presence, not application health. By default it waits for a socket to be bound; `--invert` waits for it to be free. Timeout, cancellation, and scan failure never trigger `--exec`. `kill --force` first allows graceful shutdown for `--timeout`; use `--signal KILL` for immediate termination.
+
+Build with Go 1.25.6 or newer, as specified in `go.mod`:
+
+```bash
+go build -o bin/portman ./cmd/portman
+go test -race ./...
+go vet ./...
+```
 
 ## License
 

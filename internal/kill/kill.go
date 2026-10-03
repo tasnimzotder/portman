@@ -34,6 +34,9 @@ func ParseSignal(name string) (syscall.Signal, bool) {
 
 // Kill sends a signal to the process with the given PID.
 func Kill(pid int, signal syscall.Signal) error {
+	if pid <= 0 {
+		return ErrProcessNotFound
+	}
 	process, err := os.FindProcess(pid)
 	if err != nil {
 		return ErrProcessNotFound
@@ -46,6 +49,10 @@ func Kill(pid int, signal syscall.Signal) error {
 		}
 		if errors.Is(err, os.ErrProcessDone) {
 			return nil // Process already exited
+		}
+		// ESRCH = no such process — treat as already gone
+		if errors.Is(err, syscall.ESRCH) {
+			return nil
 		}
 		return err
 	}
@@ -71,6 +78,9 @@ func WaitForExit(pid int, timeout time.Duration) bool {
 
 // IsRunning checks if a process is still running.
 func IsRunning(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
 	process, err := os.FindProcess(pid)
 	if err != nil {
 		return false
@@ -78,30 +88,39 @@ func IsRunning(pid int) bool {
 
 	// Sending signal 0 checks if process exists without actually signaling
 	err = process.Signal(syscall.Signal(0))
-	return err == nil
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 // KillWithTimeout sends SIGTERM, waits for exit, then sends SIGKILL if needed.
 func KillWithTimeout(pid int, timeout time.Duration) error {
-	// First try SIGTERM
-	if err := Kill(pid, syscall.SIGTERM); err != nil {
+	return SendAndWait(pid, syscall.SIGTERM, timeout, true)
+}
+
+// SendAndWait applies the same signal semantics in text and interactive modes.
+// HUP requests a reload and need not terminate the process.
+func SendAndWait(pid int, signal syscall.Signal, timeout time.Duration, force bool) error {
+	if pid <= 0 {
+		return ErrProcessNotFound
+	}
+	if timeout <= 0 {
+		return errors.New("timeout must be positive")
+	}
+	if err := Kill(pid, signal); err != nil {
 		return err
 	}
-
-	// Wait for graceful exit
+	if signal == syscall.SIGHUP {
+		return nil
+	}
 	if WaitForExit(pid, timeout) {
 		return nil
 	}
-
-	// Force kill with SIGKILL
-	if err := Kill(pid, syscall.SIGKILL); err != nil {
-		return err
+	if force && signal != syscall.SIGKILL {
+		if err := Kill(pid, syscall.SIGKILL); err != nil {
+			return err
+		}
+		if WaitForExit(pid, 2*time.Second) {
+			return nil
+		}
 	}
-
-	// Wait a bit more for SIGKILL to take effect
-	if WaitForExit(pid, 2*time.Second) {
-		return nil
-	}
-
 	return ErrProcessRunning
 }

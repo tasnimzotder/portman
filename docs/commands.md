@@ -18,7 +18,8 @@ portman
 | USER | Process owner |
 | CONNS | Active connections |
 | UPTIME | Process uptime |
-| PROCESS | Process name |
+| COMMAND | Process name |
+| ADDRESS | Binding address |
 
 ## Port Details
 
@@ -72,8 +73,7 @@ portman port 3000 --watch
 
 Shows detailed live view with change highlighting:
 - **Yellow** highlighting for changed values (connections, memory, CPU, FDs, threads)
-- **Green** "Port became active" when port starts listening
-- **Red** "Process exited" when port closes
+- Port availability updates when the socket appears or disappears
 
 **Customizing refresh interval:**
 ```bash
@@ -110,10 +110,10 @@ portman kill <port>
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--force` | `-f` | Use SIGKILL instead of SIGTERM |
+| `--force` | `-f` | SIGTERM, then SIGKILL after timeout |
 | `--yes` | `-y` | Skip confirmation prompt |
 | `--signal` | `-s` | Signal to send: HUP, INT, TERM, KILL (default: TERM) |
-| `--timeout` | | Wait time before SIGKILL (default: 5s) |
+| `--timeout` | | Wait for exit; escalate with --force (default: 5s) |
 | `--quiet` | `-q` | Suppress output |
 
 **Examples:**
@@ -121,12 +121,12 @@ portman kill <port>
 portman kill 3000           # Kill with confirmation
 portman kill 3000 -y        # Kill without confirmation
 portman kill 3000 -s KILL   # Force kill (SIGKILL)
-portman kill 3000 --timeout 10s  # Wait 10s before force kill
+portman kill 3000 --force --timeout 10s  # Graceful exit, then SIGKILL
 ```
 
 ## Wait
 
-Wait for a port to become available (free) or occupied.
+Wait for a socket to be bound, or use `--invert` to wait for it to become free. Socket presence does not establish application readiness.
 
 ```bash
 portman wait <port>
@@ -137,16 +137,16 @@ portman wait <port>
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--timeout` | | Maximum wait time (default: 30s) |
-| `--interval` | `-i` | Check interval (default: 100ms) |
+| `--interval` | `-I` | Check interval (default: 100ms) |
 | `--exec` | `-e` | Command to run when port is ready |
 | `--quiet` | `-q` | Suppress output, just exit code |
-| `--invert` | | Wait for port to be OCCUPIED instead of free |
+| `--invert` | | Wait for port to be FREE instead of bound |
 
 **Examples:**
 ```bash
-portman wait 5432                      # Wait for port to be free
-portman wait 3000 --exec "npm start"   # Run command when port is free
-portman wait 8080 --invert             # Wait for service to start
+portman wait 5432                      # Wait for a socket to be bound
+portman wait 3000 --invert --exec "npm start" # Run command after port is free
+portman wait 8080                      # Wait for a socket to be bound
 portman wait 3000 --timeout 10s        # Wait max 10 seconds
 ```
 
@@ -174,3 +174,13 @@ portman pid 1234
 | `--sort` | | port | Sort by: port, pid, user, conns, uptime |
 | `--watch` | `-w` | false | Live updating display |
 | `--interval` | | 1s | Watch mode refresh interval |
+
+## Output and conflicts
+
+Use `--format csv` or `--format tsv` with listing, find, PID, range, conflict, and single-port inspection commands. `--json` returns valid JSON even for empty results. `--group` groups list output by process. `--interactive` (`-i`) enables interactive inspection; machine-readable output takes precedence.
+
+`portman conflicts` reports common development ports and bindings where more than one PID owns the same protocol and port. Different addresses or shared sockets may make multiple owners legitimate. A common port being occupied alone does not establish a conflict.
+
+Use `portman 3000-3000` to inspect every binding on one port. Single-port detail and kill reject multiple owners or protocols; filter with `--tcp` or `--udp` when applicable. A scan failure is an error, not an unused port. All timeouts and intervals must be positive.
+
+Interactive wait exits when the condition is met or the deadline expires, with the same success or failure result as text mode. `--exec` runs only after success. Kill rechecks ownership after confirmation; `--signal HUP` reports delivery without requiring exit. `--force` permits TERM/KILL only.

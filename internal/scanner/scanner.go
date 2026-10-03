@@ -2,8 +2,6 @@ package scanner
 
 import (
 	"errors"
-	"fmt"
-	"runtime"
 
 	"github.com/tasnimzotder/portman/internal/model"
 )
@@ -17,6 +15,7 @@ type Scanner interface {
 	ListListeners() ([]model.Listener, error)
 	GetPort(port int) (*model.Listener, error)
 	FindByPattern(pattern string) ([]model.Listener, error)
+	ListByPID(pid int) ([]model.Listener, error)
 }
 
 type Options struct {
@@ -37,13 +36,4 @@ func DefaultOptions() Options {
 	}
 }
 
-func New(opts Options) (Scanner, error) {
-	switch runtime.GOOS {
-	case "linux":
-		return nil, ErrNotImplemented
-	case "darwin":
-		return NewDarwinScanner(opts), nil
-	default:
-		return nil, fmt.Errorf("%w: %s", ErrUnsupportedPlatform, runtime.GOOS)
-	}
-}
+func New(opts Options) (Scanner, error) { return newPlatformScanner(opts) }

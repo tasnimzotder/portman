@@ -2,6 +2,20 @@ package model
 
 import "time"
 
+// Connection states returned by lsof.
+const (
+	StateListen      = "LISTEN"
+	StateEstablished = "ESTABLISHED"
+	StateCloseWait   = "CLOSE_WAIT"
+	StateTimeWait    = "TIME_WAIT"
+)
+
+// Network protocols.
+const (
+	ProtoTCP = "tcp"
+	ProtoUDP = "udp"
+)
+
 type Process struct {
 	PID           int       `json:"pid"`
 	Name          string    `json:"name"`
@@ -11,6 +25,29 @@ type Process struct {
 	UID           int       `json:"uid"`
 	StartTime     time.Time `json:"startTime"`
 	UptimeSeconds int64     `json:"uptimeSeconds"`
+}
+
+// DisplayName returns the best human-readable name for this process.
+// Prefers Command over Name, falls back to "unknown".
+func (p *Process) DisplayName() string {
+	if p == nil {
+		return "unknown"
+	}
+	if p.Command != "" {
+		return p.Command
+	}
+	if p.Name != "" {
+		return p.Name
+	}
+	return "unknown"
+}
+
+// DisplayUser returns the process owner, or "-" if unavailable.
+func (p *Process) DisplayUser() string {
+	if p == nil || p.User == "" {
+		return "-"
+	}
+	return p.User
 }
 
 type Connection struct {
@@ -38,6 +75,47 @@ type Listener struct {
 	Connections     []Connection  `json:"connections,omitempty"`
 	ConnectionCount int           `json:"connectionCount"`
 	Stats           *ProcessStats `json:"stats,omitempty"`
+}
+
+// BindingKey identifies an individual socket owner and listening address.
+type BindingKey struct {
+	Port     int
+	Protocol string
+	Address  string
+	PID      int
+}
+
+func (l Listener) Key() BindingKey {
+	return BindingKey{Port: l.Port, Protocol: l.Protocol, Address: l.Address, PID: l.PID}
+}
+
+// ProcessName returns the display name of the owning process.
+func (l *Listener) ProcessName() string {
+	return l.Process.DisplayName()
+}
+
+// ProcessUser returns the user of the owning process.
+func (l *Listener) ProcessUser() string {
+	return l.Process.DisplayUser()
+}
+
+// FilterByProtocol returns listeners matching the given protocol flags.
+// If neither flag is set, all listeners are returned.
+func FilterByProtocol(listeners []Listener, tcpOnly, udpOnly bool) []Listener {
+	if !tcpOnly && !udpOnly {
+		return listeners
+	}
+	filtered := make([]Listener, 0, len(listeners))
+	for _, l := range listeners {
+		if tcpOnly && l.Protocol != ProtoTCP {
+			continue
+		}
+		if udpOnly && l.Protocol != ProtoUDP {
+			continue
+		}
+		filtered = append(filtered, l)
+	}
+	return filtered
 }
 
 type ScanResult struct {
